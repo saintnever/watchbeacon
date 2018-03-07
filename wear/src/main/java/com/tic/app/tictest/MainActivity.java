@@ -9,20 +9,27 @@ import android.bluetooth.le.AdvertiseData;
 import android.bluetooth.le.AdvertiseSettings;
 import android.bluetooth.le.AdvertisingSet;
 import android.bluetooth.le.BluetoothLeAdvertiser;
-import android.bluetooth.le.BluetoothLeScanner;
-import android.bluetooth.le.ScanCallback;
-import android.bluetooth.le.ScanResult;
-import android.bluetooth.le.ScanSettings;
+//import android.bluetooth.le.BluetoothLeScanner;
+//import android.bluetooth.le.ScanCallback;
+//import android.bluetooth.le.ScanFilter;
+//import android.bluetooth.le.ScanResult;
+//import android.bluetooth.le.ScanSettings;
 import android.content.Context;
+import android.net.wifi.WifiManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.ParcelUuid;
 import android.util.Log;
 import android.view.View;
+import android.view.WindowManager;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.ListView;
 import android.widget.TextView;
 
 import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.wearable.MessageApi;
+import com.google.android.gms.wearable.MessageEvent;
 import com.google.android.gms.wearable.Node;
 import com.google.android.gms.wearable.NodeApi;
 import com.google.android.gms.wearable.Wearable;
@@ -32,15 +39,27 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+import no.nordicsemi.android.support.v18.scanner.BluetoothLeScannerCompat;
+import no.nordicsemi.android.support.v18.scanner.ScanCallback;
+import no.nordicsemi.android.support.v18.scanner.ScanFilter;
+import no.nordicsemi.android.support.v18.scanner.ScanResult;
+import no.nordicsemi.android.support.v18.scanner.ScanSettings;
+
+import static android.app.PendingIntent.getActivity;
+import static android.bluetooth.le.ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT;
+import static android.os.SystemClock.elapsedRealtime;
+import static java.lang.Math.abs;
+
 @TargetApi(25)
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements MessageApi.MessageListener, GoogleApiClient.ConnectionCallbacks{
     private static String TAG = "main";
     TextView txtscan, text_connect_info;
-    int ringRSSI, last_ringRSSI;
+    int ringRSSI=0, last_ringRSSI=0;
     BluetoothManager manager;
     BluetoothAdapter btAdapter;
     BluetoothLeAdvertiser btAdvertiser;
@@ -63,246 +82,241 @@ public class MainActivity extends Activity {
     boolean listening;
     String tmp_s;
 
+    BluetoothLeScannerCompat scanner;
+    ScanSettings settings;
+    List<ScanFilter> filters;
+
+    long basetime = System.currentTimeMillis() - elapsedRealtime();
+
+    private static final String ANDROID_MESSAGE_PATH = "/message1";
+    private static final String WEAR_MESSAGE_PATH = "/message";
+    private static final String START_ACTIVITY = "/start_activity";
+    private GoogleApiClient mApiClient;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.main_layout);
         txtscan = findViewById(R.id.scan_results);
-        txtscan.setText("HELLO");
+        txtscan.setText(Long.toString(basetime));
         text_connect_info = findViewById(R.id.connection);
         activity_uithread = (Activity) text_connect_info.getContext();
 
+        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+
+        WifiManager.WifiLock wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL, TAG);
+        wifiLock.setReferenceCounted(true);
+        wifiLock.acquire();
+        Log.d(TAG, "Acquired WiFi lock");
 
         manager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
         btAdapter = manager.getAdapter();
 
-//        retrieveDeviceNode();
-//        if (nodeId == null){
-//            Log.d(TAG, "no node found");
-//
-//        }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        initGoogleClient();
 
-        client = new GoogleApiClient.Builder(this).addApi(Wearable.API).build();
-//        client.connect();
-
-//        txtscan.setText("Connected to phone! ");
-
-        // bluetooth advertisement
-        BluetoothLeScanner btScanner = btAdapter.getBluetoothLeScanner();
+        //        BluetoothLeScanner btScanner = btAdapter.getBluetoothLeScanner();
+        ParcelUuid puuid = new ParcelUuid(UUID.fromString("00001819-0000-1000-8000-00805F9B34FB"));
+        UUID[] uuid = new UUID[]{UUID.fromString("00001819-0000-1000-8000-00805F9B34FB")};
 
         if (btAdapter.isEnabled()) {
-            //Scanning start
-            //      ArrayList<ScanFilter> filters = new ArrayList<>();
-            //      filters.add(
-            //                new ScanFilter.Builder()
-            //                        .setServiceUuid(
-            //                                new ParcelUuid(UUID.fromString("00001819-0000-1000-8000-00805F9B34FB"))
-            //                        )
-            //                        .build()
-            //      );
-            ScanSettings scansettings = new ScanSettings.Builder()
-                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+
+            scanner = BluetoothLeScannerCompat.getScanner();
+            settings = new no.nordicsemi.android.support.v18.scanner.ScanSettings.Builder()
+                    .setScanMode(no.nordicsemi.android.support.v18.scanner.ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setReportDelay(100)
+                    .setUseHardwareBatchingIfSupported(true)
                     .build();
-
-            btScanner.stopScan(scanCallback);
-            btScanner.startScan(null, scansettings, scanCallback);
-
-            // Advertising start
-//            btAdvertiser = btAdapter.getBluetoothLeAdvertiser();
-//            ParcelUuid puuid = new ParcelUuid(UUID.fromString("00001819-0000-1000-8000-00805F9B34FB"));
-//            btAdapter.setName("W0");
-//            AdvertiseSettings advsettings = new AdvertiseSettings.Builder()
-//                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-//                    .setConnectable(false)
-//                    .setTimeout(0)
-//                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
+            filters = new ArrayList<>();
+            filters.add(new no.nordicsemi.android.support.v18.scanner.ScanFilter.Builder().setServiceUuid(new ParcelUuid(uuid[0])).build());
+//            no.nordicsemi.android.support.v18.scanner.ScanSettings scansettings = new ScanSettings.Builder()
+//                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+//                    .setMatchMode(MATCH_MODE_STICKY)
+//                    .setNumOfMatches(MATCH_NUM_MAX_ADVERTISEMENT)
+//                    .setReportDelay(100)
 //                    .build();
-//            AdvertiseData data = new AdvertiseData.Builder()
-//                    .setIncludeDeviceName(true)
-//                    .addServiceUuid(puuid)
-//                    .setIncludeTxPowerLevel(false)
-//                    .addManufacturerData(0xff, rssi_data)
-//                    .build();
-//            btAdvertiser.startAdvertising(
-//                    advsettings,
-//                    data,
-//                    advcallback
-//            );
+//            ArrayList<ScanFilter> filters = new ArrayList<>();
+//            filters.add(new ScanFilter.Builder().setServiceUuid(puuid).build());
+//            btScanner.stopScan(scanCallback);
+//            btScanner.startScan(filters, scansettings, scanCallback);
         }
 
+        Button button_scan = findViewById(R.id.button_scan);
+        button_scan.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View view) {
+                scanner.startScan(filters, settings, new ScanCallback() {
+                    @Override
+                    public void onScanResult(int callbackType, ScanResult result) {
+                        super.onScanResult(callbackType, result);
+                        Log.d("b2wdebug", "in scan result");
+
+                        if (result.getDevice().getName() != null) {
+                            String s = "";
+                            if (result.getDevice().getName().equals("B0")) {
+                                ringRSSI = result.getRssi();
+                                //Only update if RSSI value changed
+                                if (abs(ringRSSI - last_ringRSSI)>1) {
+                                    last_ringRSSI = ringRSSI;
+//                                    String ctime = String.valueOf(System.currentTimeMillis()).substring(6);
+                                    String ctime = String.valueOf(basetime+result.getTimestampNanos()/1000000).substring(6);
+                                    s += "0:"+ ctime + ":" + Integer.toString(ringRSSI) + "\n";
+                                    send(s);
+                                    txtscan.setText(s);
+                                }
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onBatchScanResults(List<ScanResult> results) {
+                        super.onBatchScanResults(results);
+                        Log.d("b2wdebug", "in batch scan result");
+
+                        String s = "";
+                        for (ScanResult result : results) {
+                            if (result.getDevice().getName() != null) {
+                                if (result.getDevice().getName().equals("B0")) {
+                                    ringRSSI = result.getRssi();
+                                    if (abs(ringRSSI - last_ringRSSI) > 1) {
+                                        last_ringRSSI = ringRSSI;
+//                                    String ctime = String.valueOf(System.currentTimeMillis()).substring(6);
+                                        String ctime = String.valueOf(basetime + result.getTimestampNanos() / 1000000).substring(6);
+                                        s += "0:" + ctime + ":" + Integer.toString(ringRSSI) + "\n";
+                                    }
+                                }
+                            }
+                        }
+//                        send(s);
+                        sendMessage(ANDROID_MESSAGE_PATH, s);
+                        txtscan.setText(s);
+                    }
+
+                    @Override
+                    public void onScanFailed(int errorCode) {
+                        super.onScanFailed(errorCode);
+                    }
+                });
+            }
+        });
 
         Button button_connect = findViewById(R.id.button_connect);
         button_connect.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                if (socket == null) {
-                    new NetworkAsyncTask().execute("101.6.114.22");
-                } else {
-                    try {
-                        listening = false;
-                        disconnect();
-                    } catch (Exception e) {
-                        Log.d("b2wdebug", "button disconnect error: " + e.toString());
-                    }
+//                if (socket == null) {
+//                    new NetworkAsyncTask().execute("101.6.114.22");
+//                } else {
+//                    try {
+//                        listening = false;
+//                        disconnect();
+//                    } catch (Exception e) {
+//                        Log.d("b2wdebug", "button disconnect error: " + e.toString());
+//                    }
+//                }
+            }
+        });
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mApiClient != null){
+            mApiClient.unregisterConnectionCallbacks(this);
+            mApiClient.disconnect();
+        }
+
+
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        connectGoogleApi();
+    }
+
+
+    @Override
+    public void onConnected(Bundle bundle) {
+        sendMessage(START_ACTIVITY, "");
+        Wearable.MessageApi.addListener(mApiClient, this);
+    }
+
+
+    @Override
+    public void onMessageReceived(final MessageEvent messageEvent) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (messageEvent.getPath().equalsIgnoreCase(WEAR_MESSAGE_PATH)) {
+//                    mArrayAdapter.add(new String(messageEvent.getData()));
+//                    mArrayAdapter.notifyDataSetChanged();
                 }
             }
         });
     }
 
 
-
-    ScanCallback scanCallback = new ScanCallback() {
-        //
-        @Override
-        public void onScanResult(int callbackType, ScanResult result) {
-            super.onScanResult(callbackType, result);
-            if (result.getDevice().getName() != null) {
-//                Log.d(TAG, "Device name:" + result.getDevice().getName() + " with RSSI: " + result.getRssi());
-                String s = "";
-                if (result.getDevice().getName().equals("B0")) {
-                    ringRSSI = result.getRssi();
-                    txtscan.setText("Device name:" + result.getDevice().getName() + "with RSSI: " + ringRSSI);
-                    //Only update if RSSI value changed
-                    if (ringRSSI != last_ringRSSI) {
-                        last_ringRSSI = ringRSSI;
-                        s += result.getTimestampNanos() / 1000000 + ":" + Integer.toString(ringRSSI) + "\n";
-                        send(s);
-                    }
-                }
-            }
+    @Override
+    protected void onStop() {
+        if (mApiClient != null) {
+            Wearable.MessageApi.removeListener(mApiClient, this);
+            if (mApiClient.isConnected())
+                mApiClient.disconnect();
         }
+        super.onStop();
+    }
 
-        @Override
-        public void onScanFailed(int errorCode) {
-            switch (errorCode) {
-                case SCAN_FAILED_ALREADY_STARTED:
-                    Log.d(TAG, "Failed : Already started");
-                    break;
-                case SCAN_FAILED_APPLICATION_REGISTRATION_FAILED:
-                    Log.d(TAG, "Failed : Application Registration Failed");
-                    break;
-                case SCAN_FAILED_INTERNAL_ERROR:
-                    Log.d(TAG, "Failed : Internal Error");
-                    break;
-                case SCAN_FAILED_FEATURE_UNSUPPORTED:
-                    Log.d(TAG, "Failed : Feature unsupported");
-                    break;
-                case 5:
-                    Log.d(TAG, "Failed : hardware resources");
-                    break;
-                case 0:
-                    Log.d(TAG, "Success : No error");
-                    break;
-            }
-        }
-    };
 
-    AdvertiseCallback advcallback = new AdvertiseCallback() {
 
-        private String TAG = "Advertiser";
+    @Override
+    public void onConnectionSuspended(int i) {
 
-        @Override
-        public void onStartSuccess(AdvertiseSettings settingsInEffect) {
-            super.onStartSuccess(settingsInEffect);
-            Log.d(TAG, "Success");
-        }
+    }
 
-        @Override
-        public void onStartFailure(int errorCode) {
-            switch (errorCode) {
-                case ADVERTISE_FAILED_ALREADY_STARTED:
-                    Log.d(TAG, "Failed : Already started");
-                    break;
-                case ADVERTISE_FAILED_DATA_TOO_LARGE:
-                    Log.d(TAG, "Failed : Data too large");
-                    break;
-                case ADVERTISE_FAILED_FEATURE_UNSUPPORTED:
-                    Log.d(TAG, "Failed : Feature unsupported");
-                    break;
-                case ADVERTISE_FAILED_INTERNAL_ERROR:
-                    Log.d(TAG, "Failed : Internal Error");
-                    break;
-                case ADVERTISE_FAILED_TOO_MANY_ADVERTISERS:
-                    Log.d(TAG, "Failed : Too many advertisers");
-                    break;
-            }
-        }
-    };
-
-//    AdvertisingSetCallback advsetcallback = new AdvertisingSetCallback() {
+//    private void init() {
+//        mListView = (ListView) findViewById(R.id.list);
+//        mArrayAdapter = new ArrayAdapter<>(this, R.layout.list_item);
+//        mListView.setAdapter(mArrayAdapter);
 //
-//        private String TAG = "Advertiser";
+//        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 //
-//        @Override
-//        public void onAdvertisingSetStarted(AdvertisingSet advertisingSet, int txPower, int status) {
-//            printstatus(status);
-//        }
-//
-//        @Override
-//        public void onAdvertisingSetStopped(AdvertisingSet advertisingSet) {
-//            Log.d(TAG, "Adv Stopped");
-//        }
-//
-//        @Override
-//        public void onAdvertisingDataSet(AdvertisingSet advertisingSet, int status) {
-//            printstatus(status);
-//        }
-//
-//        private void printstatus(int status){
-//            switch (status) {
-//                case ADVERTISE_FAILED_ALREADY_STARTED:
-//                    Log.d(TAG, "Failed : Already started");
-//                    break;
-//                case ADVERTISE_FAILED_DATA_TOO_LARGE:
-//                    Log.d(TAG, "Failed : Data too large");
-//                    break;
-//                case ADVERTISE_FAILED_FEATURE_UNSUPPORTED:
-//                    Log.d(TAG, "Failed : Feature unsupported");
-//                    break;
-//                case ADVERTISE_FAILED_INTERNAL_ERROR:
-//                    Log.d(TAG, "Failed : Internal Error");
-//                    break;
-//                case ADVERTISE_FAILED_TOO_MANY_ADVERTISERS:
-//                    Log.d(TAG, "Failed : Too many advertisers");
-//                    break;
-//                case ADVERTISE_SUCCESS:
-//                    Log.d(TAG, "Success : Adv Started");
-//                    break;
+//        mButton = (Button) findViewById(R.id.btn_send_wear);
+//        mButton.setOnClickListener(new View.OnClickListener() {
+//            @Override
+//            public void onClick(View v) {
+//                sendMessage(ANDROID_MESSAGE_PATH, "From Wear");
 //            }
-//        }
-//
-//    };
+//        });
+//    }
 
+    private void initGoogleClient() {
+        mApiClient = new GoogleApiClient.Builder(this)
+                .addApi(Wearable.API)
+                .addConnectionCallbacks(this)
+                .build();
 
-    /**
-     * Connects to the GoogleApiClient and retrieves the connected device's Node ID. If there are
-     * multiple connected devices, the first Node ID is returned.
-     */
-    private void retrieveDeviceNode() {
+        connectGoogleApi();
+    }
+
+    private void connectGoogleApi() {
+        if (mApiClient != null && !(mApiClient.isConnected() || mApiClient.isConnecting())) {
+            mApiClient.connect();
+        }
+    }
+
+    private void sendMessage(final String path, final String text) {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                client.connect();
-                NodeApi.GetConnectedNodesResult result =
-                        Wearable.NodeApi.getConnectedNodes(client).await();
-                List<Node> nodes = result.getNodes();
-                if (nodes.size() > 0) {
-                    nodeId = nodes.get(0).getId();
+                NodeApi.GetConnectedNodesResult nodes = Wearable.NodeApi.getConnectedNodes(mApiClient).await();
+                for (Node node : nodes.getNodes()) {
+                    MessageApi.SendMessageResult result = Wearable.MessageApi.sendMessage(
+                            mApiClient, node.getId(), path, text.getBytes()).await();
+
                 }
-                client.disconnect();
             }
         }).start();
-    }
-
-    private void sendRSSI(final String data) {
-        if (nodeId != null) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    Wearable.MessageApi.sendMessage(client, nodeId, sendpath, data.getBytes());
-                }
-            }).start();
-        }
     }
 
     //WiFi Network upload
